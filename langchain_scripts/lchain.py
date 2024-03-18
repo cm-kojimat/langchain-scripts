@@ -43,6 +43,11 @@ def main() -> None:
         invoke_input = {"system": args.system, "input": text}
         resp = chain.invoke(input=invoke_input)
         print("Answer: ", resp["answer"])
+        if resp.get("documents"):
+            print(
+                "Document: ",
+                [(doc.metadata["source"], doc.metadata) for doc in resp["documents"]],
+            )
 
 
 if __name__ == "__main__":
