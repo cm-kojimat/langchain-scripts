@@ -46,7 +46,7 @@ def main() -> None:
         if resp.get("documents"):
             print(
                 "Document: ",
-                [(doc.metadata["source"], doc.metadata) for doc in resp["documents"]],
+                [doc.metadata["source"] for doc in resp["documents"]],
             )
 
 
