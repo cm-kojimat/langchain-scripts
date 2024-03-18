@@ -17,14 +17,10 @@ langchain-openai = "^0.0.8"
 langchainhub = "^0.1.15"
 
 [tool.poetry.group.dev.dependencies]
-ruff = "^0.3.1"
 black = "^24.2.0"
-pyright = "^1.1.352"
 isort = "^5.13.2"
-
-[tool.poetry.group.webscraping.dependencies]
-playwright = "^1.42.0"
-html2text = "^2024.2.26"
+pyright = "^1.1.352"
+ruff = "^0.3.1"
 
 [tool.poetry.scripts]
 lchain = "langchain_scripts.lchain:main"
