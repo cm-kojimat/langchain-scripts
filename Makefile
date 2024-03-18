@@ -1,6 +1,3 @@
-
-
-
 format:
 	poetry run black .
 	poetry run ruff check --fix --unsafe-fixes --fix-only .
