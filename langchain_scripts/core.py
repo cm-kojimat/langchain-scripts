@@ -103,16 +103,6 @@ def _get_documents(document_schema: ParseResult) -> VectorStoreRetriever:
     if query.get("suffixes"):
         document_args["suffixes"] = query["suffixes"]
 
-    if query.get("faiss_folder"):
-        folder_dir = Path(query["faiss_folder"][0])
-    else:
-        folder_dir = Path.joinpath(
-            Path.home(),
-            ".cache",
-            "faiss",
-            sha256(document_schema.geturl().encode()).hexdigest(),
-        )
-
     logger.info("documents args: %s", document_args)
     loader = GenericLoader.from_filesystem(
         path=document_schema.path,
@@ -128,6 +118,15 @@ def _get_documents(document_schema: ParseResult) -> VectorStoreRetriever:
 
     embedding = _detect_embedding(embedding_schema=document_schema)
 
+    if query.get("faiss_folder"):
+        folder_dir = Path(query["faiss_folder"][0])
+    else:
+        folder_dir = Path.joinpath(
+            Path.home(),
+            ".cache",
+            "faiss",
+            sha256(document_schema.geturl().encode()).hexdigest(),
+        )
     vectorstore = _get_faiss_vectorstore(
         documents=documents,
         embedding=embedding,
