@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 from argparse import ArgumentParser
@@ -24,8 +25,12 @@ def main() -> None:
     parser.add_argument("--debug", type=bool, default=False)
     args = parser.parse_args()
 
-    set_verbose(args.verbose)
-    set_debug(args.debug)
+    if args.verbose:
+        logging.basicConfig(level=logging.INFO)
+        set_verbose(args.verbose)
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG)
+        set_debug(args.debug)
 
     chain = build_chain(model=args.model, documents=args.documents)
 

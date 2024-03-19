@@ -1,3 +1,4 @@
+import logging
 from hashlib import sha256
 from operator import itemgetter
 from pathlib import Path
@@ -29,6 +30,8 @@ from langchain_core.runnables import (
 from langchain_core.utils.image import image_to_data_url
 from langchain_core.vectorstores import VectorStoreRetriever
 from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
+
+logger = logging.getLogger(__name__)
 
 DOCUMENT_PROMPT = PromptTemplate.from_template(
     """#source:{source}
@@ -110,6 +113,7 @@ def _get_documents(document_schema: ParseResult) -> VectorStoreRetriever:
             sha256(document_schema.geturl().encode()).hexdigest(),
         )
 
+    logger.info("documents args: %s", document_args)
     loader = GenericLoader.from_filesystem(
         path=document_schema.path,
         parser=LanguageParser(),
@@ -136,6 +140,7 @@ def _get_documents(document_schema: ParseResult) -> VectorStoreRetriever:
     for k, v in [(k, v) for k, v in query.items() if k.startswith("search_kwargs_")]:
         retriever_args.setdefault("search_kwargs", {})
         retriever_args.setdefault("search_kwargs", {})[k[15:]] = v[0]
+    logger.info("retriever args: %s", retriever_args)
     return vectorstore.as_retriever(**retriever_args)
 
 
