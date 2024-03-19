@@ -26,6 +26,7 @@ from langchain_core.runnables import (
     RunnablePassthrough,
     RunnableSerializable,
 )
+from langchain_core.utils.image import image_to_data_url
 from langchain_core.vectorstores import VectorStoreRetriever
 from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 
@@ -138,24 +139,49 @@ def _get_documents(document_schema: ParseResult) -> VectorStoreRetriever:
     return vectorstore.as_retriever(**retriever_args)
 
 
-def _combine_documents(documents: list[Document]) -> list[str]:
-    return [format_document(doc, DOCUMENT_PROMPT) for doc in documents]
+def _combine_documents(documents: list[Document]) -> list[BaseMessage]:
+    return [
+        HumanMessage(
+            content=[
+                {
+                    "type": "text",
+                    "text": format_document(doc, DOCUMENT_PROMPT),
+                }
+                for doc in documents
+            ],
+        ),
+    ]
 
 
 def _combine_message(context: dict) -> list[BaseMessage]:
     messages = []
+    human_message_contents = []
     if context.get("system"):
         messages.append(SystemMessage(content=context["system"]))
     if context.get("documents"):
-        documents_context = [
-            SystemMessage(content=doc)
-            for doc in _combine_documents(context["documents"])
-        ]
-        messages.extend(documents_context)
+        messages.extend(context["documents"])
     if context.get("chat_history"):
         messages.extend(context["chat_history"])
     if context.get("input"):
-        messages.append(HumanMessage(content=context["input"]))
+        for raw_input in context["input"].split("\n\n"):
+            if raw_input.startswith("<<file://") and raw_input.endswith(">>"):
+                file_url = urlparse(raw_input[2:-2])
+                data_url = image_to_data_url(f"{file_url.netloc}{file_url.path}")
+                human_message_contents.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": data_url},
+                    },
+                )
+            else:
+                human_message_contents.append(
+                    {
+                        "type": "text",
+                        "text": raw_input,
+                    },
+                )
+    if human_message_contents:
+        messages.append(HumanMessage(content=human_message_contents))
     return messages
 
 
