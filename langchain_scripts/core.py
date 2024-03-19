@@ -138,8 +138,9 @@ def _get_documents(document_schema: ParseResult) -> VectorStoreRetriever:
     if query.get("search_type"):
         retriever_args["search_type"] = query["search_type"][0]
     for k, v in [(k, v) for k, v in query.items() if k.startswith("search_kwargs_")]:
-        retriever_args.setdefault("search_kwargs", {})
-        retriever_args.setdefault("search_kwargs", {})[k[15:]] = v[0]
+        kwargs_name = k[len("search_kwargs_") :]
+        if kwargs_name == "k":
+            retriever_args.setdefault("search_kwargs", {})[kwargs_name] = int(v[0])
     logger.info("retriever args: %s", retriever_args)
     return vectorstore.as_retriever(**retriever_args)
 
