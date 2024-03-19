@@ -1,5 +1,5 @@
-from unittest.mock import Mock, patch
-from urllib.parse import urlparse
+from unittest.mock import ANY, Mock, patch
+from urllib.parse import ParseResult, urlparse
 
 import pytest
 from langchain_community.chat_models import BedrockChat, ChatOllama, ChatOpenAI
@@ -18,6 +18,7 @@ from langchain_scripts.core import (
     _combine_message,
     _detect_chat_model,
     _detect_embedding,
+    _get_documents,
 )
 
 
@@ -96,11 +97,23 @@ _test_combine_message_args: dict[str, tuple[dict, list[BaseMessage]]] = {
     "system and documents": (
         {
             "system": "You are a helpful assistant.",
-            "documents": [HumanMessage(content="This is a document.")],
+            "documents": [
+                Document(
+                    page_content="> This is a document.",
+                    metadata={"source": "x.md", "language": "markdown"},
+                ),
+            ],
         },
         [
             SystemMessage(content="You are a helpful assistant."),
-            HumanMessage(content="This is a document."),
+            HumanMessage(
+                content=[
+                    {
+                        "type": "text",
+                        "text": "#source:x.md\n```markdown\n> This is a document.\n```",
+                    },
+                ],
+            ),
         ],
     ),
     "chat_history": (
@@ -192,3 +205,61 @@ def test_combine_documents() -> None:
             ],
         ),
     ]
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected_document_args", "expected_search_args"),
+    [
+        (urlparse("ollama://codellama/test"), {}, {}),
+        (urlparse("ollama://codellama/test?glob=*.txt"), {"glob": "*.txt"}, {}),
+        (
+            urlparse("ollama://codellama/test?exclude=*.txt&exclude=*.yml"),
+            {"exclude": ["*.txt", "*.yml"]},
+            {},
+        ),
+        (
+            urlparse("ollama://codellama/test?show_progress=1"),
+            {"show_progress": True},
+            {},
+        ),
+        (
+            urlparse("ollama://codellama/test?language=python"),
+            {},
+            {},
+        ),
+        (
+            urlparse("ollama://codellama/test?suffixes=.txt&suffixes=.md"),
+            {"suffixes": [".txt", ".md"]},
+            {},
+        ),
+        (
+            urlparse("ollama://codellama/test?search_type=similarity"),
+            {},
+            {"search_type": "similarity"},
+        ),
+        (
+            urlparse("ollama://codellama/test?search_kwargs_k=10"),
+            {},
+            {"search_kwargs": {"k": 10}},
+        ),
+    ],
+)
+@patch("langchain_scripts.core.FAISS")
+@patch("langchain_scripts.core.GenericLoader")
+def test_get_documents(
+    mock_loader: Mock,
+    mock_vectorstore: Mock,
+    schema: ParseResult,
+    expected_document_args: dict,
+    expected_search_args: dict,
+) -> None:
+    _get_documents(schema)
+
+    mock_loader.from_filesystem.assert_called_once_with(
+        path=schema.path,
+        parser=ANY,
+        **expected_document_args,
+    )
+    mock_vectorstore.from_documents.return_value.as_retriever.assert_called_once_with(
+        **expected_search_args,
+    )
