@@ -159,7 +159,7 @@ def _combine_message(context: dict) -> list[BaseMessage]:
     if context.get("system"):
         messages.append(SystemMessage(content=context["system"]))
     if context.get("documents"):
-        messages.extend(context["documents"])
+        messages.extend(_combine_documents(context["documents"]))
     if context.get("chat_history"):
         messages.extend(context["chat_history"])
     if context.get("input"):

@@ -96,11 +96,23 @@ _test_combine_message_args: dict[str, tuple[dict, list[BaseMessage]]] = {
     "system and documents": (
         {
             "system": "You are a helpful assistant.",
-            "documents": [HumanMessage(content="This is a document.")],
+            "documents": [
+                Document(
+                    page_content="> This is a document.",
+                    metadata={"source": "x.md", "language": "markdown"},
+                ),
+            ],
         },
         [
             SystemMessage(content="You are a helpful assistant."),
-            HumanMessage(content="This is a document."),
+            HumanMessage(
+                content=[
+                    {
+                        "type": "text",
+                        "text": "#source:x.md\n```markdown\n> This is a document.\n```",
+                    },
+                ],
+            ),
         ],
     ),
     "chat_history": (
