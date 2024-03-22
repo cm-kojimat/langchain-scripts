@@ -88,23 +88,11 @@ def _detect_embedding(embedding_schema: ParseResult) -> Embeddings:
     raise ValueError(msg)
 
 
-def _get_faiss_vectorstore(
-    documents: Iterable[Document],
-    embedding: Embeddings,
+def _is_existing_faiss_vectorstore(
     folder_dir: Path,
     index_name: str = "index",
-) -> FAISS:
-    if Path(folder_dir).joinpath(f"{index_name}.faiss").exists():
-        return FAISS.load_local(
-            folder_path=str(folder_dir),
-            index_name=index_name,
-            embeddings=embedding,
-            allow_dangerous_deserialization=True,
-        )
-
-    vectorstore = FAISS.from_documents(documents=list(documents), embedding=embedding)
-    vectorstore.save_local(folder_path=str(folder_dir), index_name=index_name)
-    return vectorstore
+) -> bool:
+    return Path(folder_dir).joinpath(f"{index_name}.faiss").exists()
 
 
 def _get_file_documents(path: str, query: dict) -> Iterable[Document]:
@@ -136,8 +124,7 @@ def _get_file_documents(path: str, query: dict) -> Iterable[Document]:
 def _get_vectorstore(
     embedding_schema: ParseResult,
     input_schema: ParseResult,
-    documents: Iterable[Document],
-) -> FAISS:
+) -> FAISS | None:
     query = parse_qs(embedding_schema.query)
     embedding = _detect_embedding(embedding_schema=embedding_schema)
 
@@ -151,12 +138,21 @@ def _get_vectorstore(
             sha256(embedding_schema.geturl().encode()).hexdigest(),
         )
     index_name = sha256(input_schema.geturl().encode()).hexdigest()
-    return _get_faiss_vectorstore(
-        documents=documents,
-        embedding=embedding,
-        folder_dir=folder_dir,
-        index_name=index_name,
-    )
+    if _is_existing_faiss_vectorstore(folder_dir=folder_dir, index_name=index_name):
+        return FAISS.load_local(
+            folder_path=str(folder_dir),
+            index_name=index_name,
+            embeddings=embedding,
+            allow_dangerous_deserialization=True,
+        )
+
+    documents = list(_get_documents_from_input(input_schema=input_schema))
+    if not documents:
+        return None
+
+    vectorstore = FAISS.from_documents(documents=documents, embedding=embedding)
+    vectorstore.save_local(folder_path=str(folder_dir), index_name=index_name)
+    return vectorstore
 
 
 def _build_retriever(
@@ -201,6 +197,18 @@ def _get_pdf_documents(path: str) -> Iterable[Document]:
     yield from loader.load_and_split()
 
 
+def _get_documents_from_input(input_schema: ParseResult) -> Iterable[Document]:
+    if input_schema.scheme == "docs":
+        yield from _get_file_documents(
+            path=input_schema.netloc + input_schema.path,
+            query=parse_qs(input_schema.query),
+        )
+    elif input_schema.scheme in ("http", "https"):
+        yield from _get_html_documents(urls=[input_schema.geturl()])
+    elif input_schema.scheme == "pdf":
+        yield from _get_pdf_documents(path=input_schema.netloc + input_schema.path)
+
+
 def _load_vectorstores(context: dict) -> list[FAISS]:
     if not context.get("input") or not context.get("embedding"):
         return []
@@ -221,40 +229,12 @@ def _load_vectorstores(context: dict) -> list[FAISS]:
                 embedding_schema = urlparse(input_schema_query["embedding"][0])
             else:
                 embedding_schema = urlparse(context["embedding"])
-            if input_schema.scheme in ("http", "https"):
-                url = input_schema.geturl()
-                documents = _get_html_documents(urls=[url])
-                vectorstores.append(
-                    _get_vectorstore(
-                        embedding_schema=embedding_schema,
-                        input_schema=input_schema,
-                        documents=list(documents),
-                    ),
-                )
-            elif input_schema.scheme == "docs":
-                documents = _get_file_documents(
-                    path=input_schema.netloc + input_schema.path,
-                    query=input_schema_query,
-                )
-
-                vectorstores.append(
-                    _get_vectorstore(
-                        embedding_schema=embedding_schema,
-                        input_schema=input_schema,
-                        documents=documents,
-                    ),
-                )
-            elif input_schema.scheme == "pdf":
-                documents = _get_pdf_documents(
-                    path=input_schema.netloc + input_schema.path,
-                )
-                vectorstores.append(
-                    _get_vectorstore(
-                        embedding_schema=embedding_schema,
-                        input_schema=input_schema,
-                        documents=documents,
-                    ),
-                )
+            vectorstore = _get_vectorstore(
+                embedding_schema=embedding_schema,
+                input_schema=input_schema,
+            )
+            if vectorstore:
+                vectorstores.append(vectorstore)
 
     return vectorstores
 
