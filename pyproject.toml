@@ -15,6 +15,10 @@ langchain-core = "^0.1.30"
 langchain-experimental = "^0.0.53"
 langchain-openai = "^0.0.8"
 langchainhub = "^0.1.15"
+pypdf = "^4.1.0"
+html2text = "^2024.2.26"
+cryptography = "^42.0.5"
+fake-useragent = "^1.5.1"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.2.0"

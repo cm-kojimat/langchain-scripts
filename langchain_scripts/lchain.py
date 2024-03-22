@@ -16,9 +16,9 @@ def main() -> None:
         default=os.environ.get("LCHAIN_CHAT_MODEL", "ollama://llama2"),
     )
     parser.add_argument(
-        "--documents",
+        "--embedding",
         type=str,
-        default=os.environ.get("LCHAIN_DOCUMENTS"),
+        default=os.environ.get("LCHAIN_EMBEDDING", "ollama://llama2"),
     )
     parser.add_argument("--system", type=str, default="")
     parser.add_argument("--verbose", type=bool, default=False)
@@ -32,11 +32,15 @@ def main() -> None:
         logging.basicConfig(level=logging.DEBUG)
         set_debug(args.debug)
 
-    chain = build_chain(model=args.model, documents=args.documents)
+    chain = build_chain(model=args.model)
 
     if not sys.stdin.isatty():
         text = sys.stdin.read().strip()
-        invoke_input = {"system": args.system, "input": text}
+        invoke_input = {
+            "system": args.system,
+            "input": text,
+            "embedding": args.embedding,
+        }
         resp = chain.invoke(input=invoke_input)
         print(resp["answer"])
         return
@@ -45,7 +49,11 @@ def main() -> None:
         text = input("Input: ")
         if not text:
             break
-        invoke_input = {"system": args.system, "input": text}
+        invoke_input = {
+            "system": args.system,
+            "input": text,
+            "embedding": args.embedding,
+        }
         resp = chain.invoke(input=invoke_input)
         print("Answer: ", resp["answer"])
         if resp.get("documents"):

@@ -1,4 +1,6 @@
 import logging
+from collections.abc import Iterable
+from functools import lru_cache
 from hashlib import sha256
 from operator import itemgetter
 from pathlib import Path
@@ -9,8 +11,10 @@ from langchain.memory import ConversationBufferMemory
 from langchain.prompts.prompt import PromptTemplate
 from langchain.vectorstores.faiss import FAISS
 from langchain_community.chat_models import BedrockChat, ChatOllama, ChatOpenAI
+from langchain_community.document_loaders import AsyncHtmlLoader, PyPDFLoader
 from langchain_community.document_loaders.generic import GenericLoader
 from langchain_community.document_loaders.parsers import LanguageParser
+from langchain_community.document_transformers import Html2TextTransformer
 from langchain_community.embeddings import (
     BedrockEmbeddings,
     OllamaEmbeddings,
@@ -19,7 +23,8 @@ from langchain_community.embeddings import (
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages.human import HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import format_document
 from langchain_core.runnables import (
@@ -33,7 +38,13 @@ from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
 
-DOCUMENT_PROMPT = PromptTemplate.from_template(
+SOURCE_DOCUMENT_PROMPT = PromptTemplate.from_template(
+    """#source:{source}
+```
+{page_content}
+```""",
+)
+CODE_DOCUMENT_PROMPT = PromptTemplate.from_template(
     """#source:{source}
 ```{language}
 {page_content}
@@ -41,6 +52,7 @@ DOCUMENT_PROMPT = PromptTemplate.from_template(
 )
 
 
+@lru_cache(maxsize=8)
 def _detect_chat_model(model_schema: ParseResult) -> BaseChatModel:
     query = parse_qs(model_schema.query)
     if model_schema.scheme == "ollama":
@@ -58,6 +70,7 @@ def _detect_chat_model(model_schema: ParseResult) -> BaseChatModel:
     raise ValueError(msg)
 
 
+@lru_cache(maxsize=8)
 def _detect_embedding(embedding_schema: ParseResult) -> Embeddings:
     query = parse_qs(embedding_schema.query)
     if embedding_schema.scheme == "ollama":
@@ -76,24 +89,26 @@ def _detect_embedding(embedding_schema: ParseResult) -> Embeddings:
 
 
 def _get_faiss_vectorstore(
-    documents: list[Document],
+    documents: Iterable[Document],
     embedding: Embeddings,
     folder_dir: Path,
+    index_name: str = "index",
 ) -> FAISS:
-    if folder_dir.exists():
+    if Path(folder_dir).joinpath(f"{index_name}.faiss").exists():
         return FAISS.load_local(
             folder_path=str(folder_dir),
+            index_name=index_name,
             embeddings=embedding,
             allow_dangerous_deserialization=True,
         )
-    vectorstore = FAISS.from_documents(documents=documents, embedding=embedding)
-    vectorstore.save_local(folder_path=str(folder_dir))
+
+    vectorstore = FAISS.from_documents(documents=list(documents), embedding=embedding)
+    vectorstore.save_local(folder_path=str(folder_dir), index_name=index_name)
     return vectorstore
 
 
-def _get_documents(document_schema: ParseResult) -> VectorStoreRetriever:
+def _get_file_documents(path: str, query: dict) -> Iterable[Document]:
     document_args = {}
-    query = parse_qs(document_schema.query)
     if query.get("glob"):
         document_args["glob"] = query["glob"][0]
     if query.get("exclude"):
@@ -105,7 +120,7 @@ def _get_documents(document_schema: ParseResult) -> VectorStoreRetriever:
 
     logger.info("documents args: %s", document_args)
     loader = GenericLoader.from_filesystem(
-        path=document_schema.path,
+        path=path,
         parser=LanguageParser(),
         **document_args,
     )
@@ -115,8 +130,16 @@ def _get_documents(document_schema: ParseResult) -> VectorStoreRetriever:
             language=Language(query["language"][0]),
         )
         documents = splitter.split_documents(documents=documents)
+    yield from documents
 
-    embedding = _detect_embedding(embedding_schema=document_schema)
+
+def _get_vectorstore(
+    embedding_schema: ParseResult,
+    input_schema: ParseResult,
+    documents: Iterable[Document],
+) -> FAISS:
+    query = parse_qs(embedding_schema.query)
+    embedding = _detect_embedding(embedding_schema=embedding_schema)
 
     if query.get("faiss_folder"):
         folder_dir = Path(query["faiss_folder"][0])
@@ -125,14 +148,21 @@ def _get_documents(document_schema: ParseResult) -> VectorStoreRetriever:
             Path.home(),
             ".cache",
             "faiss",
-            sha256(document_schema.geturl().encode()).hexdigest(),
+            sha256(embedding_schema.geturl().encode()).hexdigest(),
         )
-    vectorstore = _get_faiss_vectorstore(
+    index_name = sha256(input_schema.geturl().encode()).hexdigest()
+    return _get_faiss_vectorstore(
         documents=documents,
         embedding=embedding,
         folder_dir=folder_dir,
+        index_name=index_name,
     )
 
+
+def _build_retriever(
+    vectorstore: FAISS,
+    query: dict,
+) -> VectorStoreRetriever:
     retriever_args = {}
     if query.get("search_type"):
         retriever_args["search_type"] = query["search_type"][0]
@@ -144,67 +174,152 @@ def _get_documents(document_schema: ParseResult) -> VectorStoreRetriever:
     return vectorstore.as_retriever(**retriever_args)
 
 
-def _combine_documents(documents: list[Document]) -> list[BaseMessage]:
+def _combine_documents(documents: list[Document]) -> list[dict]:
     return [
-        HumanMessage(
-            content=[
-                {
-                    "type": "text",
-                    "text": format_document(doc, DOCUMENT_PROMPT),
-                }
-                for doc in documents
-            ],
-        ),
+        {
+            "type": "text",
+            "text": (
+                format_document(doc, CODE_DOCUMENT_PROMPT)
+                if doc.metadata.get("language") and doc.metadata.get("source")
+                else format_document(doc, SOURCE_DOCUMENT_PROMPT)
+            ),
+        }
+        for doc in documents
     ]
+
+
+def _get_html_documents(urls: list[str]) -> Iterable[Document]:
+    loader = AsyncHtmlLoader(urls)
+    docs = loader.load()
+    html2text = Html2TextTransformer()
+    splitter = RecursiveCharacterTextSplitter.from_language(language=Language.MARKDOWN)
+    yield from splitter.split_documents(documents=html2text.transform_documents(docs))
+
+
+def _get_pdf_documents(path: str) -> Iterable[Document]:
+    loader = PyPDFLoader(path)
+    yield from loader.load_and_split()
+
+
+def _load_vectorstores(context: dict) -> list[FAISS]:
+    if not context.get("input") or not context.get("embedding"):
+        return []
+
+    input_text = context["input"]
+
+    vectorstores = []
+    for raw_input in input_text.split("\n" * 3):
+        if not raw_input:
+            continue
+        raw_input_stripped = raw_input.strip()
+        if raw_input_stripped in (" ", "\n"):
+            continue
+        if raw_input_stripped.startswith("<<") and raw_input_stripped.endswith(">>"):
+            input_schema = urlparse(raw_input_stripped[2:-2])
+            input_schema_query = parse_qs(input_schema.query)
+            if "embedding" in input_schema_query:
+                embedding_schema = urlparse(input_schema_query["embedding"][0])
+            else:
+                embedding_schema = urlparse(context["embedding"])
+            if input_schema.scheme in ("http", "https"):
+                url = input_schema.geturl()
+                documents = _get_html_documents(urls=[url])
+                vectorstores.append(
+                    _get_vectorstore(
+                        embedding_schema=embedding_schema,
+                        input_schema=input_schema,
+                        documents=list(documents),
+                    ),
+                )
+            elif input_schema.scheme == "docs":
+                documents = _get_file_documents(
+                    path=input_schema.netloc + input_schema.path,
+                    query=input_schema_query,
+                )
+
+                vectorstores.append(
+                    _get_vectorstore(
+                        embedding_schema=embedding_schema,
+                        input_schema=input_schema,
+                        documents=documents,
+                    ),
+                )
+            elif input_schema.scheme == "pdf":
+                documents = _get_pdf_documents(
+                    path=input_schema.netloc + input_schema.path,
+                )
+                vectorstores.append(
+                    _get_vectorstore(
+                        embedding_schema=embedding_schema,
+                        input_schema=input_schema,
+                        documents=documents,
+                    ),
+                )
+
+    return vectorstores
+
+
+def _embed_image_from_text(input_text: str) -> Iterable[dict]:
+    for raw_input in input_text.split("\n" * 3):
+        if not raw_input:
+            continue
+        raw_input_stripped = raw_input.strip()
+        if raw_input_stripped in (" ", "\n"):
+            yield {"type": "text", "text": raw_input}
+            continue
+        if raw_input.strip().startswith("<<") and raw_input.strip().endswith(">>"):
+            input_schema = urlparse(raw_input[2:-2])
+            if input_schema.scheme == "image":
+                data_url = image_to_data_url(input_schema.netloc + input_schema.path)
+                yield {"type": "image_url", "image_url": {"url": data_url}}
+                continue
+        yield {"type": "text", "text": raw_input}
+        continue
+
+
+def _retrive_documents(context: dict) -> list[Document]:
+    if (
+        not context.get("vectorstores")
+        or not context.get("embedding")
+        or not context.get("input")
+    ):
+        return []
+
+    base_vectorstore: FAISS | None = None
+    for vectorstore in context["vectorstores"]:
+        if base_vectorstore is None:
+            base_vectorstore = vectorstore
+            continue
+        base_vectorstore.merge_from(vectorstore)
+
+    if base_vectorstore is None:
+        return []
+
+    embedding_schema = urlparse(context["embedding"])
+    query = parse_qs(embedding_schema.query)
+    retriever = _build_retriever(base_vectorstore, query)
+    return retriever.invoke(input=context["input"])
 
 
 def _combine_message(context: dict) -> list[BaseMessage]:
     messages = []
-    human_message_contents = []
     if context.get("system"):
         messages.append(SystemMessage(content=context["system"]))
-    if context.get("documents"):
-        messages.extend(_combine_documents(context["documents"]))
     if context.get("chat_history"):
         messages.extend(context["chat_history"])
+
+    human_contents = []
     if context.get("input"):
-        for raw_input in context["input"].split("\n\n"):
-            if raw_input.startswith("<<file://") and raw_input.endswith(">>"):
-                file_url = urlparse(raw_input[2:-2])
-                data_url = image_to_data_url(f"{file_url.netloc}{file_url.path}")
-                human_message_contents.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": data_url},
-                    },
-                )
-            else:
-                human_message_contents.append(
-                    {
-                        "type": "text",
-                        "text": raw_input,
-                    },
-                )
-    if human_message_contents:
-        messages.append(HumanMessage(content=human_message_contents))
+        human_contents.extend(_embed_image_from_text(input_text=context["input"]))
+    if context.get("documents"):
+        human_contents.extend(_combine_documents(context["documents"]))
+    messages.append(HumanMessage(content=human_contents))
     return messages
 
 
-def build_chain(
-    model: str,
-    documents: str,
-) -> RunnableSerializable:
+def build_chain(model: str) -> RunnableSerializable:
     model_schema = urlparse(model)
     chat_model = _detect_chat_model(model_schema=model_schema)
-
-    if documents:
-        document_schema = urlparse(documents)
-        retriever = _get_documents(document_schema=document_schema)
-        documents_loader = RunnablePassthrough.assign(
-            documents=itemgetter("input") | retriever,
-        )
-    else:
-        documents_loader = RunnablePassthrough()
 
     memory = ConversationBufferMemory(
         return_messages=True,
@@ -224,7 +339,10 @@ def build_chain(
 
     return (
         memory_loader
-        | documents_loader
+        | RunnablePassthrough.assign(
+            vectorstores=RunnableLambda(_load_vectorstores),
+        )
+        | RunnablePassthrough.assign(documents=RunnableLambda(_retrive_documents))
         | RunnablePassthrough.assign(messages=RunnableLambda(_combine_message))
         | RunnablePassthrough.assign(
             answer=itemgetter("messages") | chat_model | StrOutputParser(),
