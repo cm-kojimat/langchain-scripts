@@ -29,7 +29,7 @@ pytest-cov = "^4.1.0"
 ruff = "^0.3.1"
 
 [tool.poetry.scripts]
-lchain = "langchain_scripts.lchain:main"
+lchain = "langchain_scripts.cli:main"
 
 [tool.isort]
 profile = "black"

@@ -5,7 +5,7 @@ from argparse import ArgumentParser
 
 from langchain.globals import set_debug, set_verbose
 
-from langchain_scripts.core import build_chain
+from langchain_scripts.chain import build
 
 
 def main() -> None:
@@ -31,6 +31,7 @@ def main() -> None:
     )
     parser.add_argument("--debug", "-d", default=False, action="store_true")
     parser.add_argument("--buffer", "-b", default=False, action="store_true")
+    parser.add_argument("--show-docs", default=False, action="store_true")
     args = parser.parse_args()
 
     if args.verbose:
@@ -40,7 +41,7 @@ def main() -> None:
         logging.basicConfig(level=logging.DEBUG)
         set_debug(args.debug)
 
-    chain = build_chain(model=args.model)
+    chain = build(model=args.model)
 
     if not sys.stdin.isatty():
         text = sys.stdin.read().strip()
@@ -51,6 +52,18 @@ def main() -> None:
         }
         resp = chain.invoke(input=invoke_input)
         print(resp["answer"])
+        if args.show_docs and resp.get("documents"):
+            print(
+                "* Document:\n",
+                "\n".join(
+                    [
+                        f"""source: {doc.metadata["source"]}
+content: {doc.page_content[:150]}
+"""
+                        for doc in resp["documents"]
+                    ],
+                ),
+            )
         return
 
     prev_context = {}
@@ -73,7 +86,7 @@ def main() -> None:
         }
         resp = chain.invoke(input=invoke_input)
         print("* Answer: ", resp["answer"])
-        if resp.get("documents"):
+        if args.show_docs and resp.get("documents"):
             print(
                 "* Document:\n",
                 "\n".join(
