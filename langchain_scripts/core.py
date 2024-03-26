@@ -1,5 +1,4 @@
 import logging
-from collections.abc import Iterable
 from functools import lru_cache
 from hashlib import sha256
 from operator import itemgetter
@@ -95,7 +94,7 @@ def _is_existing_faiss_vectorstore(
     return Path(folder_dir).joinpath(f"{index_name}.faiss").exists()
 
 
-def _get_file_documents(path: str, query: dict) -> Iterable[Document]:
+def _get_file_documents(path: str, query: dict) -> list[Document]:
     document_args = {}
     if query.get("glob"):
         document_args["glob"] = query["glob"][0]
@@ -118,7 +117,7 @@ def _get_file_documents(path: str, query: dict) -> Iterable[Document]:
             language=Language(query["language"][0]),
         )
         documents = splitter.split_documents(documents=documents)
-    yield from documents
+    return documents
 
 
 def _get_vectorstore(
@@ -184,29 +183,33 @@ def _combine_documents(documents: list[Document]) -> list[dict]:
     ]
 
 
-def _get_html_documents(urls: list[str]) -> Iterable[Document]:
+def _get_html_documents(urls: list[str]) -> list[Document]:
     loader = AsyncHtmlLoader(urls)
     docs = loader.load()
     html2text = Html2TextTransformer()
     splitter = RecursiveCharacterTextSplitter.from_language(language=Language.MARKDOWN)
-    yield from splitter.split_documents(documents=html2text.transform_documents(docs))
+    return splitter.split_documents(documents=html2text.transform_documents(docs))
 
 
-def _get_pdf_documents(path: str) -> Iterable[Document]:
+def _get_pdf_documents(path: str) -> list[Document]:
     loader = PyPDFLoader(path)
-    yield from loader.load_and_split()
+    return loader.load_and_split()
 
 
-def _get_documents_from_input(input_schema: ParseResult) -> Iterable[Document]:
+def _get_documents_from_input(input_schema: ParseResult) -> list[Document]:
     if input_schema.scheme == "docs":
-        yield from _get_file_documents(
+        return _get_file_documents(
             path=input_schema.netloc + input_schema.path,
             query=parse_qs(input_schema.query),
         )
-    elif input_schema.scheme in ("http", "https"):
-        yield from _get_html_documents(urls=[input_schema.geturl()])
-    elif input_schema.scheme == "pdf":
-        yield from _get_pdf_documents(path=input_schema.netloc + input_schema.path)
+
+    if input_schema.scheme in ("http", "https"):
+        return _get_html_documents(urls=[input_schema.geturl()])
+
+    if input_schema.scheme == "pdf":
+        return _get_pdf_documents(path=input_schema.netloc + input_schema.path)
+
+    return []
 
 
 def _load_vectorstores(context: dict) -> list[FAISS]:
@@ -217,13 +220,13 @@ def _load_vectorstores(context: dict) -> list[FAISS]:
 
     vectorstores = []
     for raw_input in input_text.split("\n" * 3):
-        if not raw_input:
-            continue
-        raw_input_stripped = raw_input.strip()
-        if raw_input_stripped in (" ", "\n"):
-            continue
-        if raw_input_stripped.startswith("<<") and raw_input_stripped.endswith(">>"):
-            input_schema = urlparse(raw_input_stripped[2:-2])
+        input_stripped = raw_input.strip()
+        if (
+            input_stripped not in (" ", "\n")
+            and input_stripped.startswith("<<")
+            and input_stripped.endswith(">>")
+        ):
+            input_schema = urlparse(input_stripped[2:-2])
             input_schema_query = parse_qs(input_schema.query)
             if "embedding" in input_schema_query:
                 embedding_schema = urlparse(input_schema_query["embedding"][0])
@@ -239,22 +242,23 @@ def _load_vectorstores(context: dict) -> list[FAISS]:
     return vectorstores
 
 
-def _embed_image_from_text(input_text: str) -> Iterable[dict]:
+def _embed_image_from_text(input_text: str) -> list[dict]:
+    contents = []
     for raw_input in input_text.split("\n" * 3):
-        if not raw_input:
-            continue
-        raw_input_stripped = raw_input.strip()
-        if raw_input_stripped in (" ", "\n"):
-            yield {"type": "text", "text": raw_input}
-            continue
-        if raw_input.strip().startswith("<<") and raw_input.strip().endswith(">>"):
+        input_stripped = raw_input.strip()
+        if (
+            input_stripped not in (" ", "\n")
+            and input_stripped.startswith("<<")
+            and input_stripped.endswith(">>")
+        ):
             input_schema = urlparse(raw_input[2:-2])
             if input_schema.scheme == "image":
                 data_url = image_to_data_url(input_schema.netloc + input_schema.path)
-                yield {"type": "image_url", "image_url": {"url": data_url}}
+                contents.append({"type": "image_url", "image_url": {"url": data_url}})
                 continue
-        yield {"type": "text", "text": raw_input}
-        continue
+        elif raw_input:
+            contents.append({"type": "text", "text": raw_input})
+    return contents
 
 
 def _retrive_documents(context: dict) -> list[Document]:
@@ -283,16 +287,14 @@ def _retrive_documents(context: dict) -> list[Document]:
 
 def _combine_message(context: dict) -> list[BaseMessage]:
     messages = []
-    if context.get("system"):
-        messages.append(SystemMessage(content=context["system"]))
-    if context.get("chat_history"):
-        messages.extend(context["chat_history"])
+    system_prompt = context.get("system")
+    if system_prompt:
+        messages.append(SystemMessage(content=system_prompt))
+    messages.extend(context.get("chat_history", []))
 
     human_contents = []
-    if context.get("input"):
-        human_contents.extend(_embed_image_from_text(input_text=context["input"]))
-    if context.get("documents"):
-        human_contents.extend(_combine_documents(context["documents"]))
+    human_contents.extend(_embed_image_from_text(input_text=context.get("input", "")))
+    human_contents.extend(_combine_documents(context.get("documents", [])))
     messages.append(HumanMessage(content=human_contents))
     return messages
 
