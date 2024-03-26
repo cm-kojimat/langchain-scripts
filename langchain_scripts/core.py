@@ -295,7 +295,8 @@ def _combine_message(context: dict) -> list[BaseMessage]:
     human_contents = []
     human_contents.extend(_embed_image_from_text(input_text=context.get("input", "")))
     human_contents.extend(_combine_documents(context.get("documents", [])))
-    messages.append(HumanMessage(content=human_contents))
+    if human_contents:
+        messages.append(HumanMessage(content=human_contents))
     return messages
 
 
