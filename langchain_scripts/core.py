@@ -214,7 +214,7 @@ def _get_documents_from_input(input_schema: ParseResult) -> list[Document]:
 
 def _load_vectorstores(context: dict) -> list[FAISS]:
     if not context.get("input") or not context.get("embedding"):
-        return []
+        return context.get("vectorstores", [])
 
     input_text = context["input"]
 
@@ -267,7 +267,7 @@ def _retrive_documents(context: dict) -> list[Document]:
         or not context.get("embedding")
         or not context.get("input")
     ):
-        return []
+        return context.get("documents", [])
 
     base_vectorstore: FAISS | None = None
     for vectorstore in context["vectorstores"]:
